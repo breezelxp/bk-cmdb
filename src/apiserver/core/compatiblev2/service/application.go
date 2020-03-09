@@ -297,9 +297,7 @@ func (s *service) getAppSetModuleTreeByAppId(req *restful.Request, resp *restful
 		return
 	}
 
-	if nil != topo {
-		srvData.lgc.SetModuleHostCount(srvData.ctx, []mapstr.MapStr{topo})
-	} else {
+	if nil == topo {
 		converter.RespSuccessV2(make(map[string]interface{}), resp)
 		return
 	}

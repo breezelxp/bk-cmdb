@@ -59,6 +59,10 @@ func (lgc *Logics) GetAppTopo(ctx context.Context, appID int64, conds mapstr.Map
 	if err != nil {
 		return nil, err
 	}
+	err = lgc.setModuleHostCount(ctx, appID, modules)
+	if err != nil {
+		return nil, err
+	}
 	modulesMap, err := getModuleMap(modules, appID, lgc.rid, defErr)
 	if err != nil {
 		return nil, err
@@ -135,9 +139,10 @@ func getModuleMap(modules []mapstr.MapStr, appID int64, rid string, defErr error
 			"SetID":         strconv.FormatInt(setID, 10),
 			"ModuleID":      strconv.FormatInt(moduleID, 10),
 			"ModuleName":    moduleName,
-			"HostNum":       "0",
+			"HostNum":       module["HostNum"],
 			"ApplicationID": strAppID,
 			"ObjID":         common.BKInnerObjIDModule,
+			"Children":      make([]interface{}, 0),
 		})
 
 	}
@@ -219,39 +224,35 @@ func AppendDefaultTopo(topo map[string]interface{}, defaultTopo map[string]inter
 }
 
 // SetModuleHostCount get set host count
-func (lgc *Logics) SetModuleHostCount(ctx context.Context, data []mapstr.MapStr) error {
+func (lgc *Logics) setModuleHostCount(ctx context.Context, appID int64, data []mapstr.MapStr) error {
+	moduleIDs := make([]int64, 0)
 	for _, itemMap := range data {
-
-		switch itemMap["ObjID"] {
-		case common.BKInnerObjIDModule:
-
-			mouduleID, getErr := itemMap.Int64("ModuleID")
-			if nil != getErr {
-				blog.Errorf("SetModuleHostCount error. err:%v, info:%#v, rid:%s", getErr, itemMap, lgc.rid)
-				return lgc.ccErr.Errorf(common.CCErrCommInstFieldConvertFail, "module", "ModuleID", "int", getErr.Error())
-			}
-			appID, getErr := itemMap.Int64("ApplicationID")
-			if nil != getErr {
-				blog.Errorf("SetModuleHostCount error. err:%v, info:%#v, rid:%s", getErr, itemMap, lgc.rid)
-				return lgc.ccErr.Errorf(common.CCErrCommInstFieldConvertFail, "App", "ApplicationID", "int", getErr.Error())
-			}
-			hostNum, getErr := lgc.GetModuleHostCount(ctx, appID, mouduleID)
-			if nil != getErr {
-				return getErr
-			}
-			itemMap["HostNum"] = hostNum
+		moduleID, getErr := itemMap.Int64(common.BKModuleIDField)
+		if nil != getErr {
+			blog.Errorf("setModuleHostCount error. err:%v, info:%#v, rid:%s", getErr, itemMap, lgc.rid)
+			return lgc.ccErr.Errorf(common.CCErrCommInstFieldConvertFail, "module", "ModuleID", "int", getErr.Error())
 		}
-
-		if nil != itemMap["Children"] {
-			children, ok := itemMap["Children"].([]mapstr.MapStr)
-			if false == ok {
-				children = make([]mapstr.MapStr, 0)
-			}
-			lgc.SetModuleHostCount(ctx, children)
-		} else {
-			children := make([]interface{}, 0)
-			itemMap["Children"] = children
-		}
+		moduleIDs = append(moduleIDs, moduleID)
+	}
+	result, err := lgc.CoreAPI.CoreService().Host().GetHostModuleRelation(ctx, lgc.header, &metadata.HostModuleRelationRequest{
+		ApplicationID: appID,
+		ModuleIDArr:   moduleIDs,
+	})
+	if err != nil {
+		blog.Errorf("setModuleHostCount http do error. err:%s, moduleIDs:%#v,rid:%s", err.Error(), moduleIDs, lgc.rid)
+		return lgc.ccErr.CCError(common.CCErrCommHTTPDoRequestFailed)
+	}
+	if !result.Result {
+		blog.Errorf("setModuleHostCount http reply error. err code:%d,err msg:%s, moduleIDs:%#v,rid:%s", result.Code, result.ErrMsg, moduleIDs, lgc.rid)
+		return result.CCError()
+	}
+	moduleHostCountMap := make(map[int64]int64)
+	for _, relation := range result.Data.Info {
+		moduleHostCountMap[relation.ModuleID]++
+	}
+	for _, itemMap := range data {
+		moduleID, _ := itemMap.Int64(common.BKModuleIDField)
+		itemMap["HostNum"] = moduleHostCountMap[moduleID]
 	}
 	return nil
 }
