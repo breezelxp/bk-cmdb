@@ -33,7 +33,9 @@ type AuthConfig struct {
 	// enable auth
 	Enable bool
 	// enable sync auth data to iam
-	EnableSync bool
+	EnableSync          bool
+	SyncWorkerCount     int
+	SyncIntervalMinutes int
 }
 
 type RegisterInfo struct {
