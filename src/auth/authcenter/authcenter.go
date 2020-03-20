@@ -99,6 +99,32 @@ func ParseConfigFromKV(prefix string, configmap map[string]string) (AuthConfig, 
 		return cfg, errors.New(`invalid "appCode" configuration for auth center`)
 	}
 
+	workerCount := int64(1)
+	workerCountStr, exist := configmap[prefix+".syncWorkers"]
+	if exist {
+		workerCount, err = strconv.ParseInt(workerCountStr, 10, 64)
+		if err != nil {
+			return cfg, fmt.Errorf(`"syncWorkers" configuration should be integer for auth center, value: %s`, workerCountStr)
+		}
+	}
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	cfg.SyncWorkerCount = int(workerCount)
+
+	syncIntervalMinutes := int64(45)
+	syncIntervalMinutesStr, exist := configmap[prefix+".syncIntervalMinutes"]
+	if exist {
+		syncIntervalMinutes, err = strconv.ParseInt(syncIntervalMinutesStr, 10, 64)
+		if err != nil {
+			return cfg, fmt.Errorf(`"syncIntervalMinutes" configuration should be integer for auth center, value: %s`, syncIntervalMinutesStr)
+		}
+	}
+	if syncIntervalMinutes < 45 {
+		syncIntervalMinutes = 45
+	}
+	cfg.SyncIntervalMinutes = int(syncIntervalMinutes)
+
 	cfg.SystemID = SystemIDCMDB
 
 	return cfg, nil
