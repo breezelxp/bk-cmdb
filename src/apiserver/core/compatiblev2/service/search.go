@@ -334,39 +334,117 @@ func (s *service) getAppHostList(req *restful.Request, resp *restful.Response) {
 		return
 	}
 
-	appID, err := strconv.Atoi(formData["ApplicationID"][0])
+	appID, err := util.GetInt64ByInterface(formData["ApplicationID"][0])
 	if nil != err {
 		blog.Errorf("getAppHostList error: %v. input:%#v,rid:%s", err, formData, srvData.rid)
 		converter.RespFailV2(common.CCErrCommParamsNeedInt, defErr.Errorf(common.CCErrCommParamsNeedInt, "ApplicationID").Error(), resp)
 		return
 	}
 
-	param := map[string]interface{}{
-		common.BKAppIDField: appID,
-	}
-	result, err := s.Engine.CoreAPI.HostServer().HostSearchByAppID(srvData.ctx, srvData.header, param)
+	// get host module relation
+	relationResult, err := s.Engine.CoreAPI.CoreService().Host().GetHostModuleRelation(srvData.ctx, srvData.header, &metadata.HostModuleRelationRequest{
+		ApplicationID: appID,
+		Page: metadata.BasePage{
+			Limit: common.BKNoLimit,
+		},
+	})
 	if err != nil {
-		blog.Errorf("getAppHostList http do error. err:%v,input:%#v,param:%#v,rid:%s", err, formData, param, srvData.rid)
+		blog.Errorf("GetConfigByCond http do error, err:%s, bizID: %d, rid:%s", err.Error(), appID, srvData.rid)
 		converter.RespFailV2(common.CCErrCommHTTPDoRequestFailed, defErr.Error(common.CCErrCommHTTPDoRequestFailed).Error(), resp)
 		return
 	}
-	if !result.Result {
-		blog.Errorf("getAppHostList http reply error. reply:%#v,input:%#v,param:%#v,rid:%s", result, formData, param, srvData.rid)
-		converter.RespFailV2(result.Code, result.ErrMsg, resp)
+	if !relationResult.Result {
+		blog.Errorf("GetConfigByCond http response error, err code:%d, err msg:%s, bizID: %d, rid: %s", relationResult.Code, relationResult.ErrMsg, appID, srvData.rid)
+		converter.RespFailV2(relationResult.Code, relationResult.ErrMsg, resp)
 		return
 	}
 
-	resDataV2, err := converter.ResToV2ForHostList(result.Result, result.ErrMsg, result.Data)
-	if err != nil {
-
-		blog.Errorf("convert host res to v2 error:%v,input:%#v,rid:%s", err, formData, srvData.rid)
-		converter.RespFailV2(common.CCErrCommReplyDataFormatError, defErr.Error(common.CCErrCommReplyDataFormatError).Error(), resp)
+	// get host v2 data
+	hostIDArr := make([]int64, 0)
+	setIDArr := make([]int64, 0)
+	moduleIDArr := make([]int64, 0)
+	for _, config := range relationResult.Data.Info {
+		hostIDArr = append(hostIDArr, config.HostID)
+		setIDArr = append(setIDArr, config.SetID)
+		moduleIDArr = append(moduleIDArr, config.ModuleID)
+	}
+	searchParams := &metadata.QueryInput{
+		Condition: map[string]interface{}{
+			common.BKHostIDField: map[string]interface{}{
+				common.BKDBIN: hostIDArr,
+			},
+		},
+	}
+	hostResult, err := s.Engine.CoreAPI.CoreService().Host().GetHosts(srvData.ctx, srvData.header, searchParams)
+	if nil != err {
+		blog.Errorf("GetHosts error params:%+v, error:%s,rid:%s", searchParams, err.Error(), srvData.rid)
+		converter.RespFailV2(common.CCErrCommHTTPDoRequestFailed, defErr.Error(common.CCErrCommHTTPDoRequestFailed).Error(), resp)
 		return
 	}
+	if !hostResult.Result {
+		blog.Errorf("GetHosts http response error, params:%+v, err code:%d, err msg:%s,rid:%s", searchParams, hostResult.Code, hostResult.ErrMsg, srvData.rid)
+		converter.RespFailV2(hostResult.Code, hostResult.ErrMsg, resp)
+		return
+	}
+	hostMap := make(map[int64]map[string]interface{})
+	for _, host := range hostResult.Data.Info {
+		hostV2, hostID := converter.ConvertHostDataToV2(host)
+		if hostV2 == nil {
+			continue
+		}
+		hostMap[hostID] = hostV2
+	}
 
-	blog.Infof("getAppHostList success, data length: %d,rid:%s", len(resDataV2.([]interface{})), srvData.rid)
+	// get module set and biz info
+	moduleMap, err := srvData.lgc.GetInstanceMapByIDs(srvData.ctx, moduleIDArr, common.BKInnerObjIDModule)
+	if nil != err {
+		blog.Errorf("GetInstanceMapByIDs error ids:%+v, error:%s,rid:%s", moduleIDArr, err.Error(), srvData.rid)
+		converter.RespFailV2(common.CCErrCommHTTPDoRequestFailed, err.Error(), resp)
+		return
+	}
+	setMap, err := srvData.lgc.GetInstanceMapByIDs(srvData.ctx, setIDArr, common.BKInnerObjIDSet)
+	if nil != err {
+		blog.Errorf("GetInstanceMapByIDs error ids:%+v, error:%s,rid:%s", setIDArr, err.Error(), srvData.rid)
+		converter.RespFailV2(common.CCErrCommHTTPDoRequestFailed, err.Error(), resp)
+		return
+	}
+	bizMap, err := srvData.lgc.GetInstanceMapByIDs(srvData.ctx, []int64{appID}, common.BKInnerObjIDApp)
+	if nil != err {
+		blog.Errorf("GetInstanceMapByIDs error id:%d, error:%s,rid:%s", appID, err.Error(), srvData.rid)
+		converter.RespFailV2(common.CCErrCommHTTPDoRequestFailed, err.Error(), resp)
+		return
+	}
+	biz := bizMap[appID]
 
-	converter.RespSuccessV2(resDataV2, resp)
+	hostData := make([]map[string]interface{}, 0)
+	for _, config := range relationResult.Data.Info {
+		host, hasHost := hostMap[config.HostID]
+		if !hasHost {
+			blog.Errorf("hostMap has not hostID: %d,rid:%s", config.HostID, srvData.rid)
+			continue
+		}
+
+		module := moduleMap[config.ModuleID]
+		set := setMap[config.SetID]
+
+		host["ModuleID"] = util.GetStrByInterface(module[common.BKModuleIDField])
+		host["ModuleName"] = util.GetStrByInterface(module[common.BKModuleNameField])
+		host["SetID"] = util.GetStrByInterface(set[common.BKSetIDField])
+		host["SetName"] = util.GetStrByInterface(set[common.BKSetNameField])
+		host["ApplicationID"] = util.GetStrByInterface(biz[common.BKAppIDField])
+		host["ApplicationName"] = util.GetStrByInterface(biz[common.BKAppNameField])
+		host["ModuleType"] = util.GetStrByInterface(module[common.BKModuleTypeField])
+		host["Owner"] = util.GetStrByInterface(biz[common.BKOwnerIDField])
+		host["Operator"] = util.GetStrByInterface(module[common.BKOperatorField])
+		host["BakOperator"] = util.GetStrByInterface(module[common.BKBakOperatorField])
+		host[common.BKSupplierIDField] = util.GetStrByInterface(biz[common.BKSupplierIDField])
+
+		hostData = append(hostData, host)
+	}
+
+	blog.Infof("getAppHostList success, data length: %d,rid:%s", len(hostData), srvData.rid)
+
+	converter.RespSuccessV2(hostData, resp)
 }
 
 func (s *service) getHostsByProperty(req *restful.Request, resp *restful.Response) {

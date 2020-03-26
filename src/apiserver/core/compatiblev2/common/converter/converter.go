@@ -264,6 +264,23 @@ func ResToV2ForPlatList(data metadata.InstResult) (interface{}, error) {
 	return resDataV2, nil
 }
 
+func ConvertHostDataToV2(data map[string]interface{}) (map[string]interface{}, int64) {
+	dataV2 := convMapInterface(data)
+	hostID, err := util.GetInt64ByInterface(data[common.BKHostIDField])
+	if nil != err {
+		blog.Warnf("ConvertHostDataToV2 hostID not found, appID:%s, hostInfo:%+v", data[common.BKAppIDField], data)
+		return nil, hostID
+	}
+	innerIP, ok := data[common.BKHostInnerIPField].(string)
+	if !ok {
+		blog.Warnf("ConvertHostDataToV2 innerIP not found, appID:%s, hostInfo:%+v", data[common.BKHostInnerIPField], data)
+		return nil, hostID
+	}
+	hostHard := convMapInterface(convHostHardInfo(hostID, innerIP, data))
+	dataV2["ExtInfo"] = hostHard
+	return dataV2, hostID
+}
+
 //ResToV2ForHostList: convert cc v3 json data to cc v2 for host
 func ResToV2ForHostList(result bool, message string, data interface{}) (interface{}, error) {
 
@@ -760,8 +777,13 @@ func convHostHardInfo(hostID int64, innerIP string, host mapstr.MapStr) (hostHar
 
 func convMapInterface(data map[string]interface{}) map[string]interface{} {
 	mapItem := make(map[string]interface{})
+	fieldsMap := getFieldsMap("")
 	for v3key, val := range data {
-		key := ConverterV3Fields(v3key, "")
+		key := v3key
+		oldFields, ok := fieldsMap[key]
+		if ok {
+			key = oldFields
+		}
 		if key == "CreateTime" || key == "LastTime" || key == common.CreateTimeField || key == common.LastTimeField {
 			ts, ok := val.(time.Time)
 			if ok {

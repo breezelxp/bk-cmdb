@@ -144,3 +144,37 @@ func (lgc *Logics) handleHostAppRelationByHostModuleInfo(hostInfoArr []mapstr.Ma
 	}
 	return hostAppRelation, nil
 }
+
+func (lgc *Logics) GetInstanceMapByIDs(ctx context.Context, IDs []int64, objID string) (map[int64]map[string]interface{}, errors.CCError) {
+	instanceIDField := common.GetInstIDField(objID)
+	query := &metadata.QueryCondition{
+		Condition: map[string]interface{}{
+			instanceIDField: map[string]interface{}{
+				common.BKDBIN: IDs,
+			},
+		},
+		Limit: metadata.SearchLimit{Offset: 0, Limit: common.BKNoLimit},
+	}
+
+	result, err := lgc.CoreAPI.CoreService().Instance().ReadInstance(ctx, lgc.header, objID, query)
+	if err != nil {
+		blog.Errorf("GetInstanceMapByIDs http do error, err:%s,input:%+v,rid:%s", err.Error(), query, lgc.rid)
+		return nil, lgc.ccErr.Error(common.CCErrCommHTTPDoRequestFailed)
+	}
+	if !result.Result {
+		blog.Errorf("GetInstanceMapByIDs http response error, err code:%d, err msg:%s,input:%+v,rid:%s", result.Code, result.ErrMsg, query, lgc.rid)
+		return nil, lgc.ccErr.New(result.Code, result.ErrMsg)
+	}
+
+	instanceMap := make(map[int64]map[string]interface{})
+	for _, info := range result.Data.Info {
+		id, err := info.Int64(instanceIDField)
+		if err != nil {
+			blog.Errorf("GetInstanceMapByIDs convert  instance id to int error, err:%s, instance:%+v,input:%+v,rid:%s", err.Error(), info, query, lgc.rid)
+			return nil, lgc.ccErr.Errorf(common.CCErrCommInstFieldConvertFail, common.BKInnerObjIDModule, common.BKModuleIDField, "int", err.Error())
+		}
+		instanceMap[id] = info
+	}
+
+	return instanceMap, nil
+}
