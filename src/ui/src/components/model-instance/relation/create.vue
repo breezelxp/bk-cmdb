@@ -52,7 +52,6 @@
                 {{$t('已关联')}}
               </bk-link>
               <bk-link :disabled="disabled" href="javascript:void(0)" class="option-link" theme="primary" v-else
-                v-click-outside="handleCloseConfirm"
                 @click.stop="beforeUpdate($event, row[instanceIdKey], 'new')">
                 {{$t('添加关联')}}
               </bk-link>
@@ -66,7 +65,7 @@
         :auth="tableDataAuth">
       </cmdb-table-empty>
     </bk-table>
-    <div class="confirm-tips" ref="confirmTips" v-click-outside="cancelUpdate" v-show="confirm.id">
+    <div class="confirm-tips" ref="confirmTips" v-show="confirm.id">
       <p class="tips-content">{{$t('更新确认')}}</p>
       <div class="tips-option">
         <bk-button class="tips-button" theme="primary" @click="confirmUpdate">{{$t('确认')}}</bk-button>
@@ -380,10 +379,10 @@
         const { isSource } = this
         return this.searchInstAssociation({
           params: {
+            bk_obj_id: isSource ? this.objId : option.bk_obj_id,
             condition: {
               bk_asst_id: option.bk_asst_id,
               bk_obj_asst_id: option.bk_obj_asst_id,
-              bk_obj_id: isSource ? this.objId : option.bk_obj_id,
               bk_asst_obj_id: isSource ? option.bk_asst_obj_id : this.objId,
               [`${isSource ? 'bk_inst_id' : 'bk_asst_inst_id'}`]: this.instId
             }
@@ -443,7 +442,8 @@
           return exist.bk_inst_id === instId
         })
         return this.deleteInstAssociation({
-          id: (instAssociation || {}).id
+          id: (instAssociation || {}).id,
+          objId: this.objId
         })
       },
       beforeUpdate(event, instId, updateType = 'new') {
@@ -451,16 +451,19 @@
           this.updateAssociation(instId, updateType)
         } else {
           this.confirm.id = instId
-          this.confirm.instance && this.confirm.instance.destroy()
           this.confirm.instance = this.$bkPopover(event.target, {
             content: this.$refs.confirmTips,
             theme: 'light',
             zIndex: 9999,
             width: 230,
-            trigger: 'manual',
+            trigger: 'click',
             boundary: 'window',
             arrow: true,
-            interactive: true
+            interactive: true,
+            onHidden: () => {
+              this.confirm.instance && this.confirm.instance.destroy()
+              this.confirm.instance = null
+            }
           })
           this.$nextTick(() => {
             this.confirm.instance.show()
@@ -592,9 +595,6 @@
       },
       getProperty(propertyId) {
         return this.properties.find(({ bk_property_id: bkPropertyId }) => bkPropertyId === propertyId)
-      },
-      handleCloseConfirm() {
-        // this.confirm.id = null
       },
       handlePropertySelected(value, data) {
         this.filter.id = data.bk_property_id

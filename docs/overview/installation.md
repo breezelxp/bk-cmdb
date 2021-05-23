@@ -146,6 +146,7 @@ mongodb以集群的方式启动，需加入参数--replSet,如--replSet=rs0
 | mongo-url                | MongoDB实例的主节点访问地址。详情请参见。[mongo-url](https://rwynn.github.io/monstache-site/config/#mongo-url)                                                                                                                                                                                     |
 | elasticsearch-urls       | Elasticsearch的访问地址。详情请参见 [elasticsearch-urls](https://rwynn.github.io/monstache-site/config/#elasticsearch-urls)                                                                                                                                                                        |
 | direct-read-namespaces   | 指定待同步的集合，详情请参见[direct-read-namespaces](https://rwynn.github.io/monstache-site/config/#direct-read-namespaces)。                                                                                                                                                                      |
+| direct-read-dynamic-include-regex   | 通过正则表达式指定需要监听的集合。此设置可以用来监控符合正则表达式的集合中数据，注意：该功能是在2021-03-18日才合入rel6分支，请使用最新的rel6分支或者2021-03-18之后的release编译最新的Monstache                        |
 | change-stream-namespaces | 如果要使用MongoDB变更流功能，需要指定此参数。启用此参数后，oplog追踪会被设置为无效，详情请参见[change-stream-namespaces](https://rwynn.github.io/monstache-site/config/#change-stream-namespaces)。                                                                                                |
 | namespace-regex          | 通过正则表达式指定需要监听的集合。此设置可以用来监控符合正则表达式的集合中数据的变化。                                                                                                                                                                                                             |
 | elasticsearch-user       | 访问Elasticsearch的用户名。                                                                                                                                                                                                                                                                        |
@@ -173,14 +174,16 @@ elasticsearch-urls = ["http://localhost:9200"]
 
 # if you need to seed an index from a collection and not just listen and sync changes events
 # you can copy entire collections or views from MongoDB to Elasticsearch
-direct-read-namespaces = ["cmdb.cc_ApplicationBase","cmdb.cc_HostBase","cmdb.cc_ObjectBase","cmdb.cc_ObjDes"]
+direct-read-namespaces = [""]
+direct-read-dynamic-include-regex = "cmdb.cc_ObjectBase_(.*)_pub_|cmdb.cc_ApplicationBase$|cmdb.cc_HostBase$|cmdb.cc_ObjDes$"
 
 # if you want to use MongoDB change streams instead of legacy oplog tailing use change-stream-namespaces
 # change streams require at least MongoDB API 3.6+
 # if you have MongoDB 4+ you can listen for changes to an entire database or entire deployment
 # in this case you usually don't need regexes in your config to filter collections unless you target the deployment.
 # to listen to an entire db use only the database name.  For a deployment use an empty string.
-change-stream-namespaces = ["cmdb.cc_ApplicationBase","cmdb.cc_HostBase","cmdb.cc_ObjectBase","cmdb.cc_ObjDes"]
+change-stream-namespaces = [""]
+namespace-regex = "cmdb.cc_ObjectBase_(.*)_pub_|cmdb.cc_ApplicationBase$|cmdb.cc_HostBase$|cmdb.cc_ObjDes$"
 
 # additional settings
 
@@ -208,6 +211,10 @@ resume-strategy = 0
 # print detailed information including request traces
 verbose = true
 
+
+enable-patches = true
+
+
 # mapping settings
 
 [[mapping]]
@@ -217,10 +224,6 @@ index = "cmdb.cc_applicationbase"
 [[mapping]]
 namespace = "cmdb.cc_HostBase"
 index = "cmdb.cc_hostbase"
-
-[[mapping]]
-namespace = "cmdb.cc_ObjectBase"
-index = "cmdb.cc_objectbase"
 
 [[mapping]]
 namespace = "cmdb.cc_ObjDes"
@@ -381,7 +384,7 @@ python init.py  \
   --mongo_port         27017 \
   --mongo_user         cc \
   --mongo_pass         cc \
-  --blueking_cmdb_url  http://127.0.0.1:8080/ \
+  --blueking_cmdb_url  http://127.0.0.1:8080 \
   --blueking_paas_url  http://paas.domain.com \
   --listen_port        8080 \
   --auth_scheme        internal \
@@ -401,11 +404,11 @@ python init.py  \
 配置文件的存储路径：{安装目录}/cmdb_adminserver/configures/
 
 ``` shell
--rw-r--r-- 1 root root 873 Jun 18 17:25 common.conf
--rw-r--r-- 1 root root   0 Jun 18 15:20 extra.conf
--rw-r--r-- 1 root root 580 Jun 18 15:20 migrate.conf
--rw-r--r-- 1 root root 155 Jun 18 15:20 mongodb.conf
--rw-r--r-- 1 root root 321 Jun 18 15:20 redis.conf
+-rw-r--r-- 1 root root 873 Jun 18 17:25 common.yaml
+-rw-r--r-- 1 root root   0 Jun 18 15:20 extra.yaml
+-rw-r--r-- 1 root root 580 Jun 18 15:20 migrate.yaml
+-rw-r--r-- 1 root root 155 Jun 18 15:20 mongodb.yaml
+-rw-r--r-- 1 root root 321 Jun 18 15:20 redis.yaml
 ``` 
 
 配置文件目录：{安装目录}/cmdb_adminserver/configures

@@ -96,7 +96,13 @@ func (s *Service) DeleteHostBatchFromResourcePool(ctx *rest.Contexts) {
 				},
 			},
 		}
-		rsp, err := s.CoreAPI.CoreService().Association().ReadInstAssociation(ctx.Kit.Ctx, ctx.Kit.Header, &meta.QueryCondition{Condition: asstCond})
+
+		queryCond := &meta.InstAsstQueryCondition{
+			Cond:  meta.QueryCondition{Condition: asstCond},
+			ObjID: common.BKInnerObjIDHost,
+		}
+
+		rsp, err := s.CoreAPI.CoreService().Association().ReadInstAssociation(ctx.Kit.Ctx, ctx.Kit.Header, queryCond)
 		if nil != err {
 			blog.ErrorJSON("DeleteHostBatch read host association do request failed , err: %s, rid: %s", err.Error(), ctx.Kit.Rid)
 			ctx.RespAutoError(ctx.Kit.CCError.CCError(common.CCErrCommHTTPDoRequestFailed))
@@ -167,8 +173,11 @@ func (s *Service) DeleteHostBatchFromResourcePool(ctx *rest.Contexts) {
 
 	txnErr := s.Engine.CoreAPI.CoreService().Txn().AutoRunTxn(ctx.Kit.Ctx, ctx.Kit.Header, func() error {
 		for _, delConds := range delCondsArr {
-			delRsp, err := s.CoreAPI.CoreService().Association().DeleteInstAssociation(ctx.Kit.Ctx, ctx.Kit.Header,
-				&meta.DeleteOption{Condition: map[string]interface{}{common.BKDBOR: delConds}})
+			opt := &meta.InstAsstDeleteOption{
+				Opt:   meta.DeleteOption{Condition: map[string]interface{}{common.BKDBOR: delConds}},
+				ObjID: common.BKInnerObjIDHost,
+			}
+			delRsp, err := s.CoreAPI.CoreService().Association().DeleteInstAssociation(ctx.Kit.Ctx, ctx.Kit.Header, opt)
 			if err != nil {
 				blog.ErrorJSON("DeleteHostBatch delete host redundant association do request failed , err: %s, rid: %s", err.Error(), ctx.Kit.Rid)
 				return ctx.Kit.CCError.CCError(common.CCErrCommHTTPDoRequestFailed)
@@ -937,7 +946,7 @@ func (s *Service) NewHostSyncAppTopo(ctx *rest.Contexts) {
 		})
 	}
 	// srvData.lgc..NewHostSyncValidModule(req, data.ApplicationID, data.ModuleID, m.CC.ObjCtrl())
-	moduleIDS, err := s.Logic.GetModuleIDByCond(ctx.Kit, moduleCond)
+	moduleIDS, err := s.Logic.GetModuleIDByCond(ctx.Kit, meta.ConditionWithTime{Condition: moduleCond})
 	if nil != err {
 		blog.Errorf("NewHostSyncAppTop GetModuleIDByCond error. err:%s,input:%+v,rid:%s", err.Error(), hostList, ctx.Kit.Rid)
 		ctx.RespAutoError(err)
@@ -1050,7 +1059,7 @@ func (s *Service) MoveSetHost2IdleModule(ctx *rest.Contexts) {
 		},
 	}
 
-	moduleIDArr, err := s.Logic.GetModuleIDByCond(ctx.Kit, moduleCond)
+	moduleIDArr, err := s.Logic.GetModuleIDByCond(ctx.Kit, meta.ConditionWithTime{Condition: moduleCond})
 	if err != nil {
 		blog.Errorf("MoveSetHost2IdleModule GetModuleIDByCond error. err:%s, input:%#v, param:%#v, rid:%s", err.Error(), data, moduleCond, ctx.Kit.Rid)
 		ctx.RespAutoError(err)

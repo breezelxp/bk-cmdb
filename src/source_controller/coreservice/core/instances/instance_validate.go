@@ -231,7 +231,7 @@ func (m *instanceManager) validCreateInstanceData(kit *rest.Kit, objID string, i
 		}
 	}
 
-	return valid.validCreateUnique(kit, instanceData, m)
+	return nil
 }
 
 func (m *instanceManager) validateModuleCreate(kit *rest.Kit, instanceData mapstr.MapStr, valid *validator) error {
@@ -260,7 +260,7 @@ func (m *instanceManager) validateModuleCreate(kit *rest.Kit, instanceData mapst
 	}
 	bizID, err := util.GetInt64ByInterface(bizIDIf)
 	if err != nil {
-		return valid.errIf.Errorf(common.CCErrCommParamsNeedInt, common.MetadataLabelBiz)
+		return valid.errIf.Errorf(common.CCErrCommParamsNeedInt, common.BKAppIDField)
 	}
 	tpl := metadata.ServiceTemplate{}
 	filter := map[string]interface{}{
@@ -347,7 +347,7 @@ func (m *instanceManager) validUpdateInstanceData(kit *rest.Kit, objID string, u
 		return nil
 	}
 
-	return valid.validUpdateUnique(kit, updateData, instanceData, instID, m)
+	return nil
 }
 
 func (m *instanceManager) isMainlineObject(kit *rest.Kit, objID string) (bool, error) {

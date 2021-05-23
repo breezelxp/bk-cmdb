@@ -46,8 +46,18 @@ func (s *Service) CreateMainLineObject(ctx *rest.Contexts) {
 		return
 	}
 
+	// 创建模型前，先创建表，避免模型创建后，对模型数据查询出现下面的错误，
+	// (SnapshotUnavailable) Unable to read from a snapshot due to pending collection catalog changes;
+	// please retry the operation. Snapshot timestamp is Timestamp(1616747877, 51).
+	// Collection minimum is Timestamp(1616747878, 5)
+	if err := s.createObjectTableByObjectID(ctx, mainLineAssociation.ObjectID, true); err != nil {
+		ctx.RespAutoError(ctx.Kit.CCError.CCErrorf(common.CCErrCommParamsInvalid, "mainline object"))
+		return
+	}
+
 	var ret model.Object
 	txnErr := s.Engine.CoreAPI.CoreService().Txn().AutoRunTxn(ctx.Kit.Ctx, ctx.Kit.Header, func() error {
+
 		var err error
 		ret, err = s.Core.AssociationOperation().CreateMainlineAssociation(ctx.Kit, mainLineAssociation, s.Config.BusinessTopoLevelMax)
 		if err != nil {
@@ -607,10 +617,95 @@ func (s *Service) DeleteAssociationType(ctx *rest.Contexts) {
 	ctx.RespEntity(ret.Data)
 }
 
+// SearchInstanceAssociations searches object instance associations with the input conditions.
+func (s *Service) SearchInstanceAssociations(ctx *rest.Contexts) {
+	objID := ctx.Request.PathParameter("bk_obj_id")
+
+	// NOTE: NOT SUPPORT inner model associations search action in this interface.
+	if common.IsInnerModel(objID) {
+		ctx.RespAutoError(ctx.Kit.CCError.CCError(common.CCErrCommForbiddenOperateInnerModelInstanceWithCommonAPI))
+		return
+	}
+
+	// decode input parameter.
+	input := &metadata.CommonSearchFilter{}
+	if err := ctx.DecodeInto(input); nil != err {
+		ctx.RespAutoError(err)
+		return
+	}
+	input.ObjectID = objID
+
+	// validate input parameter.
+	if invalidKey, err := input.Validate(); err != nil {
+		blog.Errorf("validate search instance associations input parameters failed, err: %s, rid: %s",
+			err.Error(), ctx.Kit.Rid)
+		ctx.RespAutoError(ctx.Kit.CCError.CCErrorf(common.CCErrCommParamsInvalid, invalidKey))
+		return
+	}
+
+	// set read preference.
+	ctx.SetReadPreference(common.SecondaryPreferredMode)
+
+	// search instance associations.
+	result, err := s.Core.AssociationOperation().SearchInstanceAssociations(ctx.Kit, objID, input)
+	if err != nil {
+		blog.Errorf("search object[%s] instance associations failed, err: %s, rid: %s", objID, err.Error(), ctx.Kit.Rid)
+		ctx.RespAutoError(err)
+		return
+	}
+
+	ctx.RespEntity(result)
+}
+
+// CountInstanceAssociations counts object instance associations with the input conditions.
+func (s *Service) CountInstanceAssociations(ctx *rest.Contexts) {
+	objID := ctx.Request.PathParameter("bk_obj_id")
+
+	// NOTE: NOT SUPPORT inner model associations count action in this interface.
+	if common.IsInnerModel(objID) {
+		ctx.RespAutoError(ctx.Kit.CCError.CCError(common.CCErrCommForbiddenOperateInnerModelInstanceWithCommonAPI))
+		return
+	}
+
+	// decode input parameter.
+	input := &metadata.CommonCountFilter{}
+	if err := ctx.DecodeInto(input); nil != err {
+		ctx.RespAutoError(err)
+		return
+	}
+	input.ObjectID = objID
+
+	// validate input parameter.
+	if invalidKey, err := input.Validate(); err != nil {
+		blog.Errorf("validate count instance associations input parameters failed, err: %s, rid: %s",
+			err.Error(), ctx.Kit.Rid)
+		ctx.RespAutoError(ctx.Kit.CCError.CCErrorf(common.CCErrCommParamsInvalid, invalidKey))
+		return
+	}
+
+	// set read preference.
+	ctx.SetReadPreference(common.SecondaryPreferredMode)
+
+	// count instance associations.
+	result, err := s.Core.AssociationOperation().CountInstanceAssociations(ctx.Kit, objID, input)
+	if err != nil {
+		blog.Errorf("count object[%s] instance associations failed, err: %s, rid: %s", objID, err.Error(), ctx.Kit.Rid)
+		ctx.RespAutoError(err)
+		return
+	}
+
+	ctx.RespEntity(result)
+}
+
 func (s *Service) SearchAssociationInst(ctx *rest.Contexts) {
 	request := &metadata.SearchAssociationInstRequest{}
 	if err := ctx.DecodeInto(request); err != nil {
 		ctx.RespAutoError(ctx.Kit.CCError.New(common.CCErrCommParamsInvalid, err.Error()))
+		return
+	}
+
+	if len(request.ObjID) == 0 {
+		ctx.RespAutoError(ctx.Kit.CCError.CCErrorf(common.CCErrCommParamsNeedSet, common.BKObjIDField))
 		return
 	}
 
@@ -697,9 +792,15 @@ func (s *Service) CreateAssociationInst(ctx *rest.Contexts) {
 }
 
 func (s *Service) DeleteAssociationInst(ctx *rest.Contexts) {
+	objID := ctx.Request.PathParameter(common.BKObjIDField)
+	if len(objID) == 0 {
+		ctx.RespAutoError(ctx.Kit.CCError.CCErrorf(common.CCErrCommParamsNeedSet, common.BKObjIDField))
+		return
+	}
+
 	id, err := strconv.ParseInt(ctx.Request.PathParameter("association_id"), 10, 64)
 	if err != nil {
-		ctx.RespAutoError(ctx.Kit.CCError.CCError(common.CCErrCommParamsIsInvalid))
+		ctx.RespAutoError(ctx.Kit.CCError.CCErrorf(common.CCErrCommParamsNeedInt, "association_id"))
 		return
 	}
 
@@ -707,9 +808,7 @@ func (s *Service) DeleteAssociationInst(ctx *rest.Contexts) {
 	txnErr := s.Engine.CoreAPI.CoreService().Txn().AutoRunTxn(ctx.Kit.Ctx, ctx.Kit.Header, func() error {
 		var err error
 		idList := []int64{id}
-		// bkObjID has no actual effect here for now.
-		bkObjID := ""
-		ret, err = s.Core.AssociationOperation().DeleteInst(ctx.Kit, idList, bkObjID)
+		ret, err = s.Core.AssociationOperation().DeleteInst(ctx.Kit, objID, idList)
 		if err != nil {
 			return err
 		}
@@ -742,8 +841,8 @@ func (s *Service) DeleteAssociationInstBatch(ctx *rest.Contexts) {
 		ctx.RespAutoError(ctx.Kit.CCError.Errorf(common.CCErrCommPageLimitIsExceeded, "The number of ID should be less than 500."))
 		return
 	}
-	if request.ObjectID == "" {
-		ctx.RespAutoError(ctx.Kit.CCError.Errorf(common.CCErrCommHTTPInputInvalid))
+	if len(request.ObjectID) == 0 {
+		ctx.RespAutoError(ctx.Kit.CCError.CCErrorf(common.CCErrCommParamsNeedSet, common.BKObjIDField))
 		return
 	}
 
@@ -751,7 +850,7 @@ func (s *Service) DeleteAssociationInstBatch(ctx *rest.Contexts) {
 	txnErr := s.Engine.CoreAPI.CoreService().Txn().AutoRunTxn(ctx.Kit.Ctx, ctx.Kit.Header, func() error {
 		var ret *metadata.DeleteAssociationInstResult
 		var err error
-		ret, err = s.Core.AssociationOperation().DeleteInst(ctx.Kit, request.ID, request.ObjectID)
+		ret, err = s.Core.AssociationOperation().DeleteInst(ctx.Kit, request.ObjectID, request.ID)
 		if err != nil {
 			return err
 		}

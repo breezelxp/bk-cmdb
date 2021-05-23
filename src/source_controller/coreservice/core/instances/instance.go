@@ -26,6 +26,7 @@ import (
 	"configcenter/src/common/util"
 	"configcenter/src/source_controller/coreservice/core"
 	"configcenter/src/storage/driver/mongodb"
+	"configcenter/src/storage/driver/mongodb/instancemapping"
 	"configcenter/src/thirdparty/hooks"
 )
 
@@ -47,7 +48,7 @@ func New(dependent OperationDependences, language language.CCLanguageIf, clientS
 }
 
 func (m *instanceManager) instCnt(kit *rest.Kit, objID string, cond mapstr.MapStr) (cnt uint64, exists bool, err error) {
-	tableName := common.GetInstTableName(objID)
+	tableName := common.GetInstTableName(objID, kit.SupplierAccount)
 	cnt, err = mongodb.Client().Table(tableName).Find(cond).Count(kit.Ctx)
 	exists = 0 != cnt
 	return cnt, exists, err
@@ -76,7 +77,8 @@ func (m *instanceManager) CreateModelInstance(kit *rest.Kit, objID string, input
 
 	id, err := m.save(kit, objID, inputParam.Data)
 	if err != nil {
-		blog.ErrorJSON("CreateModelInstance failed, save error:%v, objID:%s, data:%s, rid:%s", err, objID, inputParam.Data, kit.Rid)
+		blog.ErrorJSON("CreateModelInstance failed, save error:%v, objID:%s, data:%s, rid:%s",
+			err, objID, inputParam.Data, kit.Rid)
 		return nil, err
 	}
 
@@ -114,7 +116,6 @@ func (m *instanceManager) CreateManyModelInstance(kit *rest.Kit, objID string, i
 
 		id, err := m.save(kit, objID, item)
 		if nil != err {
-			blog.Errorf("CreateManyModelInstance failed, save err:%v, objID:%s, item:%#v, rid:%s", err, objID, item, kit.Rid)
 			return nil, err
 		}
 
@@ -185,7 +186,7 @@ func (m *instanceManager) UpdateModelInstance(kit *rest.Kit, objID string, input
 	if err != nil {
 		blog.ErrorJSON("UpdateModelInstance update objID(%s) inst error. err:%s, data:%#v, condition:%s, rid:%s",
 			objID, err, inputParam.Condition, inputParam.Data, kit.Rid)
-		return nil, kit.CCError.Error(common.CCErrCommDBUpdateFailed)
+		return nil, err
 	}
 
 	if objID == common.BKInnerObjIDHost {
@@ -354,8 +355,8 @@ func (m *instanceManager) updateProcessBindIP(kit *rest.Kit, data map[string]int
 func (m *instanceManager) SearchModelInstance(kit *rest.Kit, objID string, inputParam metadata.QueryCondition) (*metadata.QueryResult, error) {
 	blog.V(9).Infof("search instance with parameter: %+v, rid: %s", inputParam, kit.Rid)
 
-	tableName := common.GetInstTableName(objID)
-	if tableName == common.BKTableNameBaseInst {
+	tableName := common.GetInstTableName(objID, kit.SupplierAccount)
+	if common.IsObjectInstShardingTable(tableName) {
 		if inputParam.Condition == nil {
 			inputParam.Condition = mapstr.MapStr{}
 		}
@@ -403,10 +404,10 @@ func (m *instanceManager) SearchModelInstance(kit *rest.Kit, objID string, input
 	var finalCount uint64
 
 	if !inputParam.DisableCounter {
-		count, countErr := mongodb.Client().Table(tableName).Find(inputParam.Condition).Count(kit.Ctx)
-		if countErr != nil {
-			blog.Errorf("count instance error [%v], rid: %s", countErr, kit.Rid)
-			return nil, countErr
+		count, err := m.countInstance(kit, objID, inputParam.Condition)
+		if err != nil {
+			blog.Errorf("search model instances count err: %s, rid: %s", err.Error(), kit.Rid)
+			return nil, err
 		}
 		finalCount = count
 	}
@@ -425,9 +426,29 @@ func (m *instanceManager) SearchModelInstance(kit *rest.Kit, objID string, input
 	return dataResult, nil
 }
 
+// CountModelInstances counts target model instances num.
+func (m *instanceManager) CountModelInstances(kit *rest.Kit,
+	objID string, input *metadata.Condition) (*metadata.CommonCountResult, error) {
+
+	if len(objID) == 0 {
+		return nil, kit.CCError.CCErrorf(common.CCErrCommParamsNeedSet, common.BKObjIDField)
+	}
+
+	count, err := m.countInstance(kit, objID, input.Condition)
+	if err != nil {
+		blog.Errorf("count model instances failed, err: %s, rid: %s", err.Error(), kit.Rid)
+		return nil, err
+	}
+	result := &metadata.CommonCountResult{Count: count}
+
+	return result, nil
+}
+
 func (m *instanceManager) DeleteModelInstance(kit *rest.Kit, objID string, inputParam metadata.DeleteOption) (*metadata.DeletedCount, error) {
-	tableName := common.GetInstTableName(objID)
+	instIDs := []int64{}
+	tableName := common.GetInstTableName(objID, kit.SupplierAccount)
 	instIDFieldName := common.GetInstIDField(objID)
+
 	inputParam.Condition.Set(common.BKOwnerIDField, kit.SupplierAccount)
 	inputParam.Condition = util.SetModOwner(inputParam.Condition, kit.SupplierAccount)
 
@@ -441,6 +462,10 @@ func (m *instanceManager) DeleteModelInstance(kit *rest.Kit, objID string, input
 		if nil != err {
 			return nil, err
 		}
+		if metadata.IsCommon(objID) {
+			instIDs = append(instIDs, instID)
+		}
+
 		exists, err := m.dependent.IsInstAsstExist(kit, objID, uint64(instID))
 		if nil != err {
 			return nil, err
@@ -450,20 +475,31 @@ func (m *instanceManager) DeleteModelInstance(kit *rest.Kit, objID string, input
 		}
 	}
 
+	// delete object instance data.
 	err = mongodb.Client().Table(tableName).Delete(kit.Ctx, inputParam.Condition)
 	if nil != err {
 		blog.ErrorJSON("DeleteModelInstance delete objID(%s) instance error. err:%s, coniditon:%s, rid:%s", objID, err.Error(), inputParam.Condition, kit.Rid)
 		return &metadata.DeletedCount{}, err
 	}
 
+	// delete object instance mapping.
+	if metadata.IsCommon(objID) {
+		if err := instancemapping.Delete(kit.Ctx, instIDs); err != nil {
+			blog.Errorf("delete object %s instance mapping failed, err: %s, instance: %v, rid: %s",
+				objID, err.Error(), instIDs, kit.Rid)
+			return nil, err
+		}
+	}
+
 	return &metadata.DeletedCount{Count: uint64(len(origins))}, nil
 }
 
 func (m *instanceManager) CascadeDeleteModelInstance(kit *rest.Kit, objID string, inputParam metadata.DeleteOption) (*metadata.DeletedCount, error) {
-	tableName := common.GetInstTableName(objID)
+	instIDs := []int64{}
+	tableName := common.GetInstTableName(objID, kit.SupplierAccount)
 	instIDFieldName := common.GetInstIDField(objID)
+
 	origins, _, err := m.getInsts(kit, objID, inputParam.Condition)
-	blog.V(5).Infof("cascade delete model instance get inst error:%v, rid: %s", origins, kit.Rid)
 	if nil != err {
 		blog.Errorf("cascade delete model instance get inst error:%v, rid: %s", err, kit.Rid)
 		return &metadata.DeletedCount{}, err
@@ -474,15 +510,31 @@ func (m *instanceManager) CascadeDeleteModelInstance(kit *rest.Kit, objID string
 		if nil != err {
 			return &metadata.DeletedCount{}, err
 		}
+		if metadata.IsCommon(objID) {
+			instIDs = append(instIDs, instID)
+		}
+
 		err = m.dependent.DeleteInstAsst(kit, objID, uint64(instID))
 		if nil != err {
 			return &metadata.DeletedCount{}, err
 		}
 	}
+
+	// delete object instance data.
 	inputParam.Condition = util.SetModOwner(inputParam.Condition, kit.SupplierAccount)
 	err = mongodb.Client().Table(tableName).Delete(kit.Ctx, inputParam.Condition)
 	if nil != err {
 		return &metadata.DeletedCount{}, err
 	}
+
+	// delete object instance mapping.
+	if metadata.IsCommon(objID) {
+		if err := instancemapping.Delete(kit.Ctx, instIDs); err != nil {
+			blog.Errorf("delete object %s instance mapping failed, err: %s, instance: %v, rid: %s",
+				objID, err.Error(), instIDs, kit.Rid)
+			return nil, err
+		}
+	}
+
 	return &metadata.DeletedCount{Count: uint64(len(origins))}, nil
 }

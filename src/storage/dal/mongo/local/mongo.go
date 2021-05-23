@@ -211,22 +211,15 @@ type Collection struct {
 }
 
 // Find 查询多个并反序列化到 Result
-func (c *Collection) Find(filter types.Filter, opts ...types.FindOpts) types.Find {
+func (c *Collection) Find(filter types.Filter, opts ...*types.FindOpts) types.Find {
 	find := &Find{
 		Collection: c,
 		filter:     filter,
 		projection: make(map[string]int),
 	}
 
-	if len(opts) == 0 {
-		find.projection["_id"] = 0
-		return find
-	}
+	find.Option(opts...)
 
-	if !opts[0].WithObjectID {
-		find.projection["_id"] = 0
-		return find
-	}
 	return find
 }
 
@@ -239,6 +232,8 @@ type Find struct {
 	start      int64
 	limit      int64
 	sort       bson.D
+
+	option types.FindOpts
 }
 
 // Fields 查询字段
@@ -320,19 +315,7 @@ func (f *Find) All(ctx context.Context, result interface{}) error {
 		return err
 	}
 
-	findOpts := &options.FindOptions{}
-	if len(f.projection) != 0 {
-		findOpts.Projection = f.projection
-	}
-	if f.start != 0 {
-		findOpts.SetSkip(f.start)
-	}
-	if f.limit != 0 {
-		findOpts.SetLimit(f.limit)
-	}
-	if len(f.sort) != 0 {
-		findOpts.SetSort(f.sort)
-	}
+	findOpts := f.generateMongoOption()
 	// 查询条件为空时候，mongodb 不返回数据
 	if f.filter == nil {
 		f.filter = bson.M{}
@@ -350,6 +333,49 @@ func (f *Find) All(ctx context.Context, result interface{}) error {
 	})
 }
 
+// List 查询多个数据， 当分页中start值为零的时候返回满足条件总行数
+func (f *Find) List(ctx context.Context, result interface{}) (int64, error) {
+	mtc.collectOperCount(f.collName, findOper)
+
+	rid := ctx.Value(common.ContextRequestIDField)
+	start := time.Now()
+	defer func() {
+		mtc.collectOperDuration(f.collName, findOper, time.Since(start))
+	}()
+
+	err := validHostType(f.collName, f.projection, result, rid)
+	if err != nil {
+		return 0, err
+	}
+
+	findOpts := f.generateMongoOption()
+	// 查询条件为空时候，mongodb 不返回数据
+	if f.filter == nil {
+		f.filter = bson.M{}
+	}
+
+	opt := getCollectionOption(ctx)
+
+	var total int64
+	err = f.tm.AutoRunWithTxn(ctx, f.dbc, func(ctx context.Context) error {
+		if f.start == 0 || (f.option.WithCount != nil && *f.option.WithCount) {
+			var cntErr error
+			total, cntErr = f.dbc.Database(f.dbname).Collection(f.collName, opt).CountDocuments(ctx, f.filter)
+			if cntErr != nil {
+				return cntErr
+			}
+		}
+		cursor, err := f.dbc.Database(f.dbname).Collection(f.collName, opt).Find(ctx, f.filter, findOpts)
+		if err != nil {
+			mtc.collectErrorCount(f.collName, findOper)
+			return err
+		}
+		return cursor.All(ctx, result)
+	})
+
+	return total, nil
+}
+
 // One 查询一个
 func (f *Find) One(ctx context.Context, result interface{}) error {
 	mtc.collectOperCount(f.collName, findOper)
@@ -365,19 +391,8 @@ func (f *Find) One(ctx context.Context, result interface{}) error {
 		return err
 	}
 
-	findOpts := &options.FindOptions{}
-	if len(f.projection) != 0 {
-		findOpts.Projection = f.projection
-	}
-	if f.start != 0 {
-		findOpts.SetSkip(f.start)
-	}
-	if f.limit != 0 {
-		findOpts.SetLimit(1)
-	}
-	if len(f.sort) != 0 {
-		findOpts.SetSort(f.sort)
-	}
+	findOpts := f.generateMongoOption()
+
 	// 查询条件为空时候，mongodb panic
 	if f.filter == nil {
 		f.filter = bson.M{}
@@ -488,6 +503,32 @@ func (c *Collection) Update(ctx context.Context, filter types.Filter, doc interf
 	})
 }
 
+// Update 更新数据, 返回修改成功的条数
+func (c *Collection) UpdateMany(ctx context.Context, filter types.Filter, doc interface{}) (uint64, error) {
+	mtc.collectOperCount(c.collName, updateOper)
+	start := time.Now()
+	defer func() {
+		mtc.collectOperDuration(c.collName, updateOper, time.Since(start))
+	}()
+
+	if filter == nil {
+		filter = bson.M{}
+	}
+
+	data := bson.M{"$set": doc}
+	var modifiedCount uint64
+	err := c.tm.AutoRunWithTxn(ctx, c.dbc, func(ctx context.Context) error {
+		updateRet, err := c.dbc.Database(c.dbname).Collection(c.collName).UpdateMany(ctx, filter, data)
+		if err != nil {
+			mtc.collectErrorCount(c.collName, updateOper)
+			return err
+		}
+		modifiedCount = uint64(updateRet.ModifiedCount)
+		return nil
+	})
+	return modifiedCount, err
+}
+
 // Upsert 数据存在更新数据，否则新加数据。
 // 注意：该接口非原子操作，可能存在插入多条相同数据的风险。
 func (c *Collection) Upsert(ctx context.Context, filter types.Filter, doc interface{}) error {
@@ -545,6 +586,12 @@ func (c *Collection) UpdateMultiModel(ctx context.Context, filter types.Filter, 
 
 // Delete 删除数据
 func (c *Collection) Delete(ctx context.Context, filter types.Filter) error {
+	_, err := c.DeleteMany(ctx, filter)
+	return err
+}
+
+// Delete 删除数据， 返回删除的行数
+func (c *Collection) DeleteMany(ctx context.Context, filter types.Filter) (uint64, error) {
 	mtc.collectOperCount(c.collName, deleteOper)
 
 	start := time.Now()
@@ -552,20 +599,23 @@ func (c *Collection) Delete(ctx context.Context, filter types.Filter) error {
 		mtc.collectOperDuration(c.collName, deleteOper, time.Since(start))
 	}()
 
-	return c.tm.AutoRunWithTxn(ctx, c.dbc, func(ctx context.Context) error {
+	var deleteCount uint64
+	err := c.tm.AutoRunWithTxn(ctx, c.dbc, func(ctx context.Context) error {
 		if err := c.tryArchiveDeletedDoc(ctx, filter); err != nil {
 			mtc.collectErrorCount(c.collName, deleteOper)
 			return err
 		}
-		_, err := c.dbc.Database(c.dbname).Collection(c.collName).DeleteMany(ctx, filter)
+		deleteRet, err := c.dbc.Database(c.dbname).Collection(c.collName).DeleteMany(ctx, filter)
 		if err != nil {
 			mtc.collectErrorCount(c.collName, deleteOper)
 			return err
 		}
 
+		deleteCount = uint64(deleteRet.DeletedCount)
 		return nil
 	})
 
+	return deleteCount, err
 }
 
 func (c *Collection) tryArchiveDeletedDoc(ctx context.Context, filter types.Filter) error {
@@ -576,12 +626,19 @@ func (c *Collection) tryArchiveDeletedDoc(ctx context.Context, filter types.Filt
 	case common.BKTableNameBaseSet:
 	case common.BKTableNameBaseModule:
 	case common.BKTableNameSetTemplate:
-	case common.BKTableNameBaseInst:
 	case common.BKTableNameBaseProcess:
 	case common.BKTableNameProcessInstanceRelation:
+
+	case common.BKTableNameBaseInst:
+		// NOTE: should not use the table name for archive, the object instance and association
+		// was saved in sharding tables, we still case the BKTableNameBaseInst here for the archive
+		// error message in order to find the wrong table name used in logics level.
+
 	default:
-		// do not archive the delete docs
-		return nil
+		if !common.IsObjectInstShardingTable(c.collName) {
+			// do not archive the delete docs
+			return nil
+		}
 	}
 
 	docs := make([]bsonx.Doc, 0)
@@ -611,8 +668,19 @@ func (c *Collection) tryArchiveDeletedDoc(ctx context.Context, filter types.Filt
 	return err
 }
 
+func (c *Mongo) redirectTable(tableName string) string {
+	if common.IsObjectInstShardingTable(tableName) {
+		tableName = common.BKTableNameBaseInst
+	} else if common.IsObjectInstAsstShardingTable(tableName) {
+		tableName = common.BKTableNameInstAsst
+	}
+	return tableName
+}
+
 // NextSequence 获取新序列号(非事务)
 func (c *Mongo) NextSequence(ctx context.Context, sequenceName string) (uint64, error) {
+	sequenceName = c.redirectTable(sequenceName)
+
 	rid := ctx.Value(common.ContextRequestIDField)
 	start := time.Now()
 	defer func() {
@@ -650,6 +718,7 @@ func (c *Mongo) NextSequences(ctx context.Context, sequenceName string, num int)
 	if num == 0 {
 		return make([]uint64, 0), nil
 	}
+	sequenceName = c.redirectTable(sequenceName)
 
 	rid := ctx.Value(common.ContextRequestIDField)
 	start := time.Now()
@@ -709,6 +778,12 @@ func (c *Mongo) HasTable(ctx context.Context, collName string) (bool, error) {
 	return false, nil
 }
 
+// ListTables 获取所有的表名
+func (c *Mongo) ListTables(ctx context.Context) ([]string, error) {
+	return c.dbc.Database(c.dbname).ListCollectionNames(ctx, bson.M{"type": "collection"})
+
+}
+
 // DropTable 移除集合
 func (c *Mongo) DropTable(ctx context.Context, collName string) error {
 	return c.dbc.Database(c.dbname).Collection(collName).Drop(ctx)
@@ -721,9 +796,12 @@ func (c *Mongo) CreateTable(ctx context.Context, collName string) error {
 
 // CreateIndex 创建索引
 func (c *Collection) CreateIndex(ctx context.Context, index types.Index) error {
+	mtc.collectOperCount(c.collName, indexCreateOper)
+
 	createIndexOpt := &options.IndexOptions{
-		Background: &index.Background,
-		Unique:     &index.Unique,
+		Background:              &index.Background,
+		Unique:                  &index.Unique,
+		PartialFilterExpression: index.PartialFilterExpression,
 	}
 	if index.Name != "" {
 		createIndexOpt.Name = &index.Name
@@ -741,6 +819,7 @@ func (c *Collection) CreateIndex(ctx context.Context, index types.Index) error {
 	indexView := c.dbc.Database(c.dbname).Collection(c.collName).Indexes()
 	_, err := indexView.CreateOne(ctx, createIndexInfo)
 	if err != nil {
+		mtc.collectErrorCount(c.collName, indexCreateOper)
 		// ignore the following case
 		// 1.the new index is exactly the same as the existing one
 		// 2.the new index has same keys with the existing one, but its name is different
@@ -755,9 +834,14 @@ func (c *Collection) CreateIndex(ctx context.Context, index types.Index) error {
 
 // DropIndex remove index by name
 func (c *Collection) DropIndex(ctx context.Context, indexName string) error {
+	mtc.collectOperCount(c.collName, indexDropOper)
 	indexView := c.dbc.Database(c.dbname).Collection(c.collName).Indexes()
 	_, err := indexView.DropOne(ctx, indexName)
-	return err
+	if err != nil {
+		mtc.collectErrorCount(c.collName, indexDropOper)
+		return err
+	}
+	return nil
 }
 
 // Indexes get all indexes for the collection
@@ -768,14 +852,14 @@ func (c *Collection) Indexes(ctx context.Context) ([]types.Index, error) {
 		return nil, err
 	}
 	defer cursor.Close(ctx)
-	var indexs []types.Index
+	var indexes []types.Index
 	for cursor.Next(ctx) {
 		idxResult := types.Index{}
 		cursor.Decode(&idxResult)
-		indexs = append(indexs, idxResult)
+		indexes = append(indexes, idxResult)
 	}
 
-	return indexs, nil
+	return indexes, nil
 }
 
 // AddColumn add a new column for the collection
@@ -911,7 +995,7 @@ func (c *Collection) AggregateAll(ctx context.Context, pipeline interface{}, res
 			return err
 		}
 		defer cursor.Close(ctx)
-		return decodeCusorIntoSlice(ctx, cursor, result)
+		return decodeCursorIntoSlice(ctx, cursor, result)
 	})
 
 }
@@ -973,7 +1057,54 @@ func (c *Collection) Distinct(ctx context.Context, field string, filter types.Fi
 	return results, err
 }
 
-func decodeCusorIntoSlice(ctx context.Context, cursor *mongo.Cursor, result interface{}) error {
+func (f *Find) Option(opts ...*types.FindOpts) {
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		if opt.WithObjectID != nil {
+			f.option.WithObjectID = opt.WithObjectID
+		}
+		if opt.WithCount != nil {
+			f.option.WithCount = opt.WithCount
+		}
+	}
+}
+
+func (f *Find) generateMongoOption() *options.FindOptions {
+	findOpts := &options.FindOptions{}
+	if f.projection == nil {
+		f.projection = make(map[string]int, 0)
+	}
+	if f.option.WithObjectID != nil && *f.option.WithObjectID {
+		// mongodb 要求，当有字段设置未1, 不设置都不显示
+		// 没有设置projection 的时候，返回所有字段
+		if len(f.projection) > 0 {
+			f.projection["_id"] = 1
+		}
+	} else {
+		if _, exists := f.projection["_id"]; !exists {
+			f.projection["_id"] = 0
+		}
+	}
+	if len(f.projection) != 0 {
+		findOpts.Projection = f.projection
+	}
+
+	if f.start != 0 {
+		findOpts.SetSkip(f.start)
+	}
+	if f.limit != 0 {
+		findOpts.SetLimit(f.limit)
+	}
+	if len(f.sort) != 0 {
+		findOpts.SetSort(f.sort)
+	}
+
+	return findOpts
+}
+
+func decodeCursorIntoSlice(ctx context.Context, cursor *mongo.Cursor, result interface{}) error {
 	resultv := reflect.ValueOf(result)
 	if resultv.Kind() != reflect.Ptr || resultv.Elem().Kind() != reflect.Slice {
 		return errors.New("result argument must be a slice address")

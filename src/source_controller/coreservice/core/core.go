@@ -80,6 +80,7 @@ type ModelOperation interface {
 	CascadeDeleteModel(kit *rest.Kit, modelID int64) (*metadata.DeletedCount, error)
 	SearchModel(kit *rest.Kit, inputParam metadata.QueryCondition) (*metadata.QueryModelDataResult, error)
 	SearchModelWithAttribute(kit *rest.Kit, inputParam metadata.QueryCondition) (*metadata.QueryModelWithAttributeDataResult, error)
+	CreateModelTables(kit *rest.Kit, inputParam metadata.CreateModelTable) error
 }
 
 // InstanceOperation instance methods
@@ -88,6 +89,7 @@ type InstanceOperation interface {
 	CreateManyModelInstance(kit *rest.Kit, objID string, inputParam metadata.CreateManyModelInstance) (*metadata.CreateManyDataResult, error)
 	UpdateModelInstance(kit *rest.Kit, objID string, inputParam metadata.UpdateOption) (*metadata.UpdatedCount, error)
 	SearchModelInstance(kit *rest.Kit, objID string, inputParam metadata.QueryCondition) (*metadata.QueryResult, error)
+	CountModelInstances(kit *rest.Kit, objID string, input *metadata.Condition) (*metadata.CommonCountResult, error)
 	DeleteModelInstance(kit *rest.Kit, objID string, inputParam metadata.DeleteOption) (*metadata.DeletedCount, error)
 	CascadeDeleteModelInstance(kit *rest.Kit, objID string, inputParam metadata.DeleteOption) (*metadata.DeletedCount, error)
 }
@@ -119,8 +121,9 @@ type ModelAssociation interface {
 type InstanceAssociation interface {
 	CreateOneInstanceAssociation(kit *rest.Kit, inputParam metadata.CreateOneInstanceAssociation) (*metadata.CreateOneDataResult, error)
 	CreateManyInstanceAssociation(kit *rest.Kit, inputParam metadata.CreateManyInstanceAssociation) (*metadata.CreateManyDataResult, error)
-	SearchInstanceAssociation(kit *rest.Kit, inputParam metadata.QueryCondition) (*metadata.QueryResult, error)
-	DeleteInstanceAssociation(kit *rest.Kit, inputParam metadata.DeleteOption) (*metadata.DeletedCount, error)
+	SearchInstanceAssociation(kit *rest.Kit, objID string, param metadata.QueryCondition) (*metadata.QueryResult, error)
+	CountInstanceAssociations(kit *rest.Kit, objID string, input *metadata.Condition) (*metadata.CommonCountResult, error)
+	DeleteInstanceAssociation(kit *rest.Kit, objID string, param metadata.DeleteOption) (*metadata.DeletedCount, error)
 }
 
 // DataSynchronizeOperation manager data synchronize interface

@@ -22,6 +22,7 @@ import (
 	"configcenter/src/common/backbone"
 	cc "configcenter/src/common/backbone/configcenter"
 	"configcenter/src/common/blog"
+	"configcenter/src/common/errors"
 	"configcenter/src/common/resource/esb"
 	"configcenter/src/common/types"
 	"configcenter/src/scene_server/admin_server/app/options"
@@ -176,6 +177,8 @@ func Run(ctx context.Context, cancel context.CancelFunc, op *options.ServerOptio
 		return err
 	}
 
+	errors.SetGlobalCCError(engine.CCErr)
+	go service.BackgroundTask()
 	select {
 	case <-ctx.Done():
 	}
